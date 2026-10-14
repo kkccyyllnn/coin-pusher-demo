@@ -1,0 +1,14 @@
+{
+  "generator": "built-in image_gen",
+  "purpose": "UI V4 arcade backgrounds",
+  "assets": [
+    {
+      "file": "arcade-landscape.png",
+      "prompt": "Use case: stylized-concept\nAsset type: landscape background texture for a browser 3D neon coin-pusher arcade game.\nPrimary request: create a polished subdued arcade hall interior, widescreen 16:9 composition, suitable behind a real interactive 3D cabinet and UI overlays.\nScene/backdrop: distant rows of softly out-of-focus arcade machines at far left and far right, subtle cyan, cobalt and magenta light, dark navy floor and walls, atmospheric gentle depth of field.\nComposition/framing: central 55 percent of the image is a quiet dark unobstructed recess with no machine or object, leaving space for the game's actual cabinet. Light sources and recognizable shapes live along the outer edges. Keep upper and lower center calm. Camera front-facing, eye level, modest perspective.\nStyle/medium: clean stylized 3D game art, tasteful smooth materials, restrained neon, visually compatible with a cel-shaded foreground machine. Low contrast and dark enough for cream UI text. Palette navy blue with sparse teal and pink highlights.\nConstraints: BACKGROUND ONLY. No coin pusher in foreground, no people, no characters, no text, no numbers, no logos, no UI, no buttons, no watermarks. Avoid excessive bloom, busy central detail, photorealistic grime, gold decoration. Horizontal landscape 1920x1080 intent."
+    },
+    {
+      "file": "arcade-portrait.png",
+      "prompt": "Use case: stylized-concept\nAsset type: portrait mobile background texture for a neon coin-pusher game, vertical 9:16 composition.\nInput images: Image 1 is a STYLE REFERENCE ONLY: match its quiet dark navy arcade hall, stylized 3D rendering, sparse cyan/cobalt/magenta edge lights and soft depth of field. Create a new portrait composition.\nScene/backdrop: arcade hall with distant machines confined to the far left and right edges, soft neon reflections below. Central 65 percent is a dark quiet empty recess for the game's actual foreground cabinet. Keep top and lower center calm so UI can overlay.\nConstraints: Background only, no foreground cabinet, no coin pusher, no people, no text, no numbers, no logos, no buttons, no UI, no watermarks. Low contrast; restrained glow; avoid central objects or busy details. Vertical portrait 1080x1920 intent."
+    }
+  ]
+}
