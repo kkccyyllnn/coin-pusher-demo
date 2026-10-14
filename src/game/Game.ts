@@ -792,6 +792,10 @@ export class Game {
     this.hud.bindDraftClose(() => this.coinEffects.hideDraft());
     this.hud.bindQualityToggle(() => this.setQualityLock(!this.governor.isFrozen));
     this.hud.setQualityLock(false, this.governor.current.tier);
+    // demo 版默认：锁在最高档（朋友看到的是设计档）。加 `?autoquality=1` 可交还自动降档，
+    // 低端设备仍能自救 —— 走的是玩家那个锁档按钮同一条 `setQualityLock` 路径，
+    // 不新增第二套换档逻辑（主工程仍保持默认自动，见 Game.ts 里"为什么是加锁"那段）。
+    if (!new URLSearchParams(window.location.search).has('autoquality')) this.setQualityLock(true);
     this.hud.bindRuinActions(
       () => this.begForChips(),
       () => this.endRun(),
