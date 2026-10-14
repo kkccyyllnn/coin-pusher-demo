@@ -1,0 +1,1746 @@
+:root {
+  --ink: #f2e8d2;
+  --ink-dim: rgba(242, 232, 210, 0.66);
+  --ink-faint: rgba(242, 232, 210, 0.34);
+  --panel: rgba(12, 20, 16, 0.78);
+  --panel-solid: #101a15;
+  /* V8 · HUD 的 CRT 扫描线（10-01）。
+     周期 4 px、暗带 35 % —— 与招牌屏那份「每隔一行压暗一道横纹」同参数
+     （那边是 4 个**纹素**一个周期，这边是 4 个 **CSS 像素**，不同空间但同一种读感）。
+     刻意做成**面板底纹**而不是全屏覆盖层：`marqueeScreen.ts` 的 C 项已经定过一次口径 ——
+     扫描线是「发光面板」的横纹，**不该横切笔画**（用户当时的原话是「扫描线我也觉得很模糊」）。
+     盖在文字上面就会重犯那个错。 */
+  --crt-scanlines: repeating-linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 0) 0 2px,
+    rgb(0 0 0 / 0.35) 2px 4px
+  );
+  --line: rgba(242, 232, 210, 0.22);
+  /* R3-U1：黄铜只允许这一支；绿 / 蓝 / 红留给语义（返币 / 钻石 / 危险），
+     不得拿 accent 当装饰色。这些字面值原先散在按钮、数字、描边里 ——
+     那就是「第二份真源」。带 -rgb 的三元组是为了能拼透明度：
+     `rgb(var(--brass-rgb) / 0.42)`（CSS 没法给一个 hex 加 alpha）。 */
+  --brass-rgb: 224 176 97;
+  --brass: rgb(var(--brass-rgb));
+  --brass-hi: #ffd88a;
+  --brass-deep: #a9762c;
+  --brass-glow: rgb(var(--brass-rgb) / 0.42);
+  --edge-hi: rgb(var(--brass-rgb) / 0.9);
+  --edge-lo: rgba(0, 0, 0, 0.55);
+  --btn-face-1: rgba(18, 28, 22, 0.9);
+  --btn-face-2: rgba(9, 16, 12, 0.94);
+  --mint: #6fd3a5;
+  --danger: #d0674a;
+  /* Stage 3b · HUD 的统一语言。
+     收成一处的理由与 `--brass-rgb` 那批一样：这几个值原先散在 chip、招牌块、
+     小字读数三处各写一遍，改一处忘两处就是"同一台机器上两种玻璃"。
+     - `--text-min` 是**可读性下限**（G-字号 判据就钉这个数：#hud 内不许有更小的可见文本）；
+     - `--hud-*` 三条是"硬边面板"的组成：不透明深色面 + 双色描边 + 圆角 0~2px，
+       并且**不再用 backdrop-filter**（玻璃模糊与像素机柜是两种语言）。 */
+  --text-min: 11px;
+  --hud-face: var(--panel-solid);
+  --hud-edge: 2px solid var(--edge-hi);
+  --hud-edge-lo: 2px solid var(--edge-lo);
+  color: var(--ink);
+  background: #0a0f0c;
+  font-family: "Avenir Next", Avenir, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  min-width: 320px;
+}
+
+#app {
+  position: relative;
+  background:
+    radial-gradient(circle at 50% 34%, rgba(31, 82, 60, 0.5), transparent 62%),
+    radial-gradient(circle at 12% 92%, rgba(169, 118, 44, 0.16), transparent 46%),
+    #0a0f0c;
+}
+
+#game-canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  outline: none;
+  touch-action: none;
+  /*
+   * 像素化的**放大方式**（见 `render/PixelScale.ts`）：开了最近邻就把
+   * 「CSS 尺寸 ÷ 整数倍率」的画布按整数块放大回 CSS 尺寸，每个 texel 占的像素块等大——
+   * 非整数放大会出现粗细不均的条纹，正是要避免的「脏」。
+   *
+   * 默认**不开**（原生分辨率 + 浏览器默认平滑采样），由 `applyPixelated()` 写
+   * `:root[data-pixel]` 控制；`?pixel=2` 这类显式倍率会把它一并打开。
+   */
+  image-rendering: auto;
+}
+
+:root[data-pixel='on'] #game-canvas {
+  image-rendering: pixelated;
+}
+
+/* 高潮反馈：只在边缘闪一下，不遮挡盘面，避免「用特效盖住因果」。 */
+#climax-flash {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#climax-flash.gold {
+  animation: climax-gold 520ms ease-out;
+}
+
+#climax-flash.green {
+  animation: climax-green 560ms ease-out;
+}
+
+/* 钻石（`KINDS.diamond.climax.tone = 'blue'`）：冷色闪光，与暖色的金/绿区分开。
+   色调名单的真源是 `src/game/kinds.ts` 的 `ClimaxTone`——新增色调要三处一起改。 */
+#climax-flash.blue {
+  animation: climax-blue 600ms ease-out;
+}
+
+/* 连落 5 次（`FEEDBACK.comboClimax`）：**白闪**，比其余三档更亮更短。
+   它是唯一一个「与币种无关」的色调——表达的是玩家连着把币推下去这件事，
+   所以刻意比金/绿/蓝更中性、更刺眼，读作「操作本身被认可了」。 */
+#climax-flash.white {
+  animation: climax-white 380ms ease-out;
+}
+
+@keyframes climax-gold {
+  0% {
+    opacity: 1;
+    box-shadow: inset 0 0 70px 8px rgb(var(--brass-rgb) / 0.45);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: inset 0 0 150px 34px rgb(var(--brass-rgb) / 0);
+  }
+}
+
+@keyframes climax-green {
+  0% {
+    opacity: 1;
+    box-shadow: inset 0 0 70px 8px rgba(111, 211, 165, 0.45);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: inset 0 0 150px 34px rgba(111, 211, 165, 0);
+  }
+}
+
+@keyframes climax-blue {
+  0% {
+    opacity: 1;
+    box-shadow: inset 0 0 70px 8px rgba(143, 227, 255, 0.5);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: inset 0 0 150px 34px rgba(143, 227, 255, 0);
+  }
+}
+
+@keyframes climax-white {
+  0% {
+    opacity: 1;
+    box-shadow: inset 0 0 110px 22px rgba(255, 252, 240, 0.62);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: inset 0 0 190px 52px rgba(255, 252, 240, 0);
+  }
+}
+
+/* ── HUD ─────────────────────────────────────────────────────────────── */
+
+#hud {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  pointer-events: none;
+}
+
+#hud-top {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  /* G-遮挡（Stage 3a）：招牌屏投到屏幕空间之后占着顶部中间一块（出厂机位、
+     1280×720 实测 x 406~874 / y 7~103），顶部条要是横穿它，像素字就被压在玻璃条底下。
+     ⚠️ 这是**量出来的常数**，不是投影锚定 —— 视口或机位一变它就会失准（那种做法是 P2，
+     本轮明确不做）。G-遮挡判据守的是"出厂机位 + desktop 视口"这一格；
+     窄视口（390×844）与改动机位之后没有覆盖，要复测得把这条门挪到 shots/visual 里。 */
+  margin-block-start: var(--marquee-clearance, 0px);
+}
+
+@media (min-width: 900px) {
+  :root {
+    --marquee-clearance: 104px;
+  }
+}
+
+#level-chip {
+  flex: 0 0 auto;
+}
+
+/*
+ * 本局赚进：顶部中间那一格。
+ *
+ * v3 摘掉了战役与分数制，所以这里不再有目标进度条——剩下三个数字：
+ * 赚进（本局成绩）/ 最高（历史成绩）/ 钱包（跨局购买力）。
+ */
+/* V2（P08/P-V7）：从「伸展到 420px 的大面板」瘦成跟随内容的轻量读数块。
+   原布局把它撑满顶部中间，一个几乎全空的黑盒压在机柜檐板与老虎机窗上，
+   是 desktop-ready 截图里最扎眼的注意力小偷。id 与读数结构不动（判据挂上面）。 */
+#earned-block {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+  padding: 5px 10px;
+  /* Stage 3b：硬边面板，与 .hud-chip 同一组 token。 */
+  border: var(--hud-edge);
+  outline: var(--hud-edge-lo);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--hud-face) 72%, transparent);
+}
+
+#earned-block strong {
+  font-size: 0.98rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+#hud-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.hud-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 84px;
+  padding: 7px 10px;
+  /* Stage 3b：硬边面板（见 :root 那组 `--hud-*` 的理由）。 */
+  border: var(--hud-edge);
+  outline: var(--hud-edge-lo);
+  border-radius: 2px;
+  background: var(--hud-face);
+}
+
+.hud-label {
+  color: var(--ink-faint);
+  font-size: var(--text-min);
+  letter-spacing: 0.04em;
+}
+
+.hud-chip strong {
+  font-size: 0.98rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+#best-value {
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+
+#earned-value {
+  display: inline-block;
+  color: var(--brass);
+  font-variant-numeric: tabular-nums;
+}
+
+#earned-value.bump {
+  animation: earned-bump 320ms ease-out;
+}
+
+@keyframes earned-bump {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.22);
+    color: var(--brass-hi);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ── 通用按钮（R3-U2 / U3）──────────────────────────────────────────────
+   风格四条（与 cabinetTexture 的 Arcane 同源）：① 用描边不用投影做层次；
+   ② 双色描边（外圈 glow、内圈实线）；③ 主色只有黄铜一支。
+   选择器不列 id：`:where(#app) button` 覆盖 #app 里的每一个按钮，
+   新按钮（含 CollectionPanel 用 JS 注入的卡片按钮）自动继承，
+   id 清单那种「加一个按钮要改 4 处」的漂移从此没有来源。
+   `:where()` 把特异性归零，所以后面任何按 id / 类写的覆盖都赢，
+   不再依赖源码顺序 —— 这也是各表面敢只写差异项的前提。 */
+:where(#app) button {
+  padding: 8px 14px;
+  border: 1px solid var(--edge-hi);
+  /* Stage 3b：硬边化到 2px。之前只改了面板，按钮与胶囊整批漏掉 ——
+     用浏览器现读才发现（`#hud` 内可见元素里还有 10 个角 >2px），所以现在有 G-硬边 守着。 */
+  border-radius: 2px;
+  box-shadow:
+    inset 0 1px 0 rgb(var(--brass-rgb) / 0.18),
+    0 0 0 1px var(--edge-lo),
+    0 0 12px var(--brass-glow);
+  color: var(--ink);
+  background: linear-gradient(180deg, var(--btn-face-1), var(--btn-face-2));
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  pointer-events: auto;
+  /* 只用 transform / 阴影色：不碰布局属性（同 .fly-score 的纪律）。 */
+  transition:
+    transform 120ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    box-shadow 160ms ease-out;
+}
+
+/* hover：外圈 glow 变宽（描边亮起），边框颜色不动 —— 动的是光，不是形。 */
+:where(#app) button:not(:disabled):hover {
+  box-shadow:
+    inset 0 1px 0 rgb(var(--brass-rgb) / 0.3),
+    0 0 0 1px var(--edge-lo),
+    0 0 18px var(--brass-glow);
+}
+
+/* 按下：位移 1 px + 内阴影，把「凸起」翻成「按下去」。 */
+:where(#app) button:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+
+/* 禁用：降饱和 + 收 glow，**不减透明度**（`:313-314` 那句原话的执行点）。
+   G-disabled 判据静态扫 CSSOM，这条规则里再出现 `opacity` 就会红。 */
+:where(#app) button:disabled {
+  filter: saturate(0.2) brightness(0.62);
+  box-shadow: none;
+  cursor: default;
+}
+
+/* ── 破产弹窗 ────────────────────────────────────────────────────────── */
+
+/* 波间三选一（1c）。
+   语义上它**不是**破产窗，所以不复用 #ruin-panel 的规则（那条是危险红）。
+   视觉上按 Stage 3b 的目标语言先写：硬边、双色描边、不透明深色底、圆角 0~2px ——
+   新面板不该是"下一个要被改掉的玻璃圆角"，那样 3b 就得多一次回归。 */
+#draft-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 29;
+  width: min(88vw, 460px);
+  transform: translate(-50%, -50%);
+  padding: 16px 18px;
+  border: 2px solid var(--edge-hi);
+  outline: 2px solid var(--edge-lo);
+  border-radius: 2px;
+  background: var(--panel-solid);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  text-align: center;
+}
+
+#draft-panel h2 {
+  margin: 0 0 6px;
+  color: var(--brass);
+  font-size: 1.05rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+
+#draft-meta {
+  margin: 0 0 12px;
+  color: var(--ink-dim);
+  font-size: 0.8rem;
+}
+
+#draft-choices {
+  display: grid;
+  gap: 8px;
+}
+
+#draft-choices button {
+  padding: 10px 12px;
+  border: 2px solid var(--edge-hi);
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--btn-face-1), var(--btn-face-2));
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Stage 3b · 候选卡的像素徽章（`render/pixelText.ts` 画的小画布，36×36 = 12×12 纹素 ×3）。
+   与招牌屏同一个来源：中文用系统字体在小画布上栅格化再整数放大，出来就是像素字，
+   不需要字体资产；`image-rendering: pixelated` 防止浏览器在展示时又给它插一遍值。 */
+.draft-badge {
+  display: inline-block;
+  width: 36px;
+  height: 36px;
+  margin-inline-end: 8px;
+  vertical-align: middle;
+  image-rendering: pixelated;
+}
+
+#draft-choices button:active {
+  transform: translateY(1px);
+}
+
+/* disabled 不用 opacity（与 :313-314 那段"灰阶 + 收 glow"的既有口径一致，
+   也是 Stage 3a 要立的那条规则在本文件里的第一个执行点）。 */
+#draft-choices button:disabled {
+  border-color: var(--edge-lo);
+  background: var(--panel-solid);
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+
+#ruin-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 30;
+  width: min(88vw, 440px);
+  transform: translate(-50%, -50%);
+  padding: 20px 22px;
+  border: 1px solid var(--danger);
+  border-radius: 14px;
+  background: var(--panel-solid);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  text-align: center;
+  pointer-events: auto;
+}
+
+#ruin-panel:not([hidden]) {
+  animation: result-slide-in 280ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+#ruin-panel h2 {
+  margin: 0 0 10px;
+  color: var(--danger);
+  font-size: 1.15rem;
+  font-weight: 500;
+}
+
+#ruin-taunt {
+  margin: 0 0 14px;
+  color: var(--brass-hi);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+#ruin-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.82rem;
+}
+
+#ruin-stats dt {
+  color: var(--ink-faint);
+  text-align: left;
+}
+
+#ruin-stats dd {
+  margin: 0;
+  color: var(--ink);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+#ruin-board {
+  margin: 0 0 14px;
+  color: var(--ink-dim);
+  font-size: 0.76rem;
+  line-height: 1.6;
+}
+
+#ruin-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#beg-button {
+  padding: 12px 16px;
+  border: 1px solid var(--brass);
+  border-radius: 10px;
+  color: #1a1206;
+  background: linear-gradient(180deg, var(--brass-hi), var(--brass));
+  font: inherit;
+  font-size: 0.94rem;
+  font-weight: 600;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+#quit-button {
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink-dim);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+#quit-button:hover {
+  border-color: var(--ink-faint);
+}
+
+/* ── 图鉴面板 ─────────────────────────────────────────────────────────── */
+
+#collection-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 30;
+  width: min(92vw, 460px);
+  max-height: 84vh;
+  overflow-y: auto;
+  transform: translate(-50%, -50%);
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel-solid);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+}
+
+#collection-panel header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+#collection-panel h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+#collection-panel h3 {
+  margin: 16px 0 8px;
+  color: var(--ink-dim);
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+#ticket-count {
+  flex: 1;
+  color: var(--brass);
+  font-size: 0.82rem;
+}
+
+.collection-note {
+  margin: 0 0 4px;
+  color: var(--ink-faint);
+  font-size: 0.74rem;
+  line-height: 1.6;
+}
+
+.skin-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.skin-card {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  grid-template-rows: auto auto;
+  gap: 6px 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.skin-card.selected {
+  border-color: var(--brass);
+  background: rgb(var(--brass-rgb) / 0.12);
+}
+
+.skin-card.locked {
+  opacity: 0.66;
+}
+
+.skin-swatch {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--ink-faint);
+  border-radius: 50%;
+}
+
+.skin-name {
+  font-size: 0.84rem;
+}
+
+.skin-card button {
+  grid-column: 1 / -1;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 0.76rem;
+  background: rgba(255, 255, 255, 0.05);
+  /* 次要表面：图鉴里一排按钮同时发光会读成「一屏待办」。
+     hover 时通用链会把 glow 加回来，所以这里只收静态那一层。 */
+  box-shadow: none;
+}
+
+/*
+ * XIXI 集章：只剩一行进度文字，贴在币床上缘（top 由 Game 按镜头投影写入）。
+ * 四槽的亮灭**已经画进 3D 模型**（推板前缘的四段标牌，见 `Pusher.buildXixiLanes`），
+ * 所以这里不再有 `.mark` 圆点 —— 两套同样的东西叠在同一处屏幕上只会互相打架。
+ */
+#xixi-marks {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Stage 3b：胶囊收回方块（与计数灯同源）。999px 的胶囊与机柜的硬边是两种语言，
+     而这条整批漏在"只改面板"里 —— 由 G-硬边 现读 computed radius 守着。 */
+  border-radius: 2px;
+  transform: translate(-50%, -50%);
+}
+
+#mark-note {
+  padding: 3px 9px;
+  border-radius: 2px;
+  background: rgba(8, 14, 11, 0.62);
+  color: var(--ink-dim);
+  font-size: var(--text-min);
+}
+
+/* 越线得分：从币的屏幕位置飘向进度条。 */
+.fly-score {
+  position: absolute;
+  z-index: 15;
+  color: var(--brass-hi);
+  font-size: 0.92rem;
+  font-weight: 600;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+/*
+ * 大号飞字（`FEEDBACK.flyScoreBig`，P10 ⑨）：一笔就有感觉的入账要**一眼看出分量**。
+ *
+ * 描边用四向 `text-shadow` 而不是 `-webkit-text-stroke`：后者是私有前缀属性，
+ * 而且会把字形压细一圈；四向阴影在深色币床上给出的是干净的外描边，不改字形。
+ */
+.fly-score.big {
+  font-size: 1.34rem;
+  font-weight: 700;
+  text-shadow:
+    1px 1px 0 #201305,
+    -1px 1px 0 #201305,
+    1px -1px 0 #201305,
+    -1px -1px 0 #201305,
+    0 2px 10px rgba(0, 0, 0, 0.75);
+}
+
+/* 徽标飞行：集齐三路与跪求赏赐到账都用它。 */
+.fly-chip {
+  position: absolute;
+  z-index: 40;
+  padding: 4px 10px;
+  border: 1px solid var(--brass);
+  border-radius: 2px;
+  background: rgba(12, 20, 16, 0.92);
+  color: var(--brass-hi);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+#combo-toast {
+  align-self: center;
+  margin-top: 6px;
+  padding: 5px 14px;
+  border-radius: 2px;
+  color: var(--brass-hi);
+  background: rgb(var(--brass-rgb) / 0.16);
+  font-size: 0.86rem;
+  opacity: 0;
+}
+
+#drain-prompt {
+  align-self: center;
+  max-width: 420px;
+  margin-top: 8px;
+  padding: 12px 16px;
+  border: 1px solid var(--brass);
+  border-radius: 10px;
+  background: var(--panel);
+  text-align: center;
+  pointer-events: auto;
+}
+
+#drain-prompt p {
+  margin: 0 0 10px;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+#drain-prompt button {
+  border-color: var(--brass);
+}
+
+/* V2（P08/P-V7）：从「顶部条下方、机柜中部」挪到**底部动作区上方居中**。
+   状态是短时事件提示，原先浮在币床上方正中，把「正在发生的机械动作」和
+   「一条说明文字」叠在同一个注视点上。改为绝对定位的 toast 条：
+   不参与 #hud 的纵向 flex 分配（hud-top 与 hud-bottom 之间少了它的占位）。 */
+#status-line {
+  position: absolute;
+  left: 50%;
+  bottom: 132px;
+  transform: translateX(-50%);
+  max-width: min(560px, 86%);
+  padding: 5px 14px;
+  border-left: 3px solid var(--mint);
+  /* 状态条是**左边一条铭牌带**的不对称形状，圆角也收成 2px（G-硬边 逐角核，只查左上会漏这条）。 */
+  border-radius: 0 2px 2px 0;
+  background: rgba(12, 20, 16, 0.62);
+  color: var(--ink-dim);
+  font-size: 0.78rem;
+  text-align: center;
+  pointer-events: none;
+}
+
+#hud-bottom {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* V2（P08/P-V7）：宽视口下余额读数隐藏（G-单读数），#hud-bottom 只剩动作簇。
+   实拍对比：整簇居中会**盖住出币托盘**（币越线后的落点，玩家要看币落进去）；
+   改为「机关行贴左、投币行贴右」的分列 —— 两侧都是空绿背景，零遮挡，
+   且左右平衡（原先全挤左下角、右侧整块空白的失衡感消除）。 */
+
+
+#resource-readout {
+  /* G-单读数（Stage 3a）：宽视口下**收起这块 DOM 读数**，余额的唯一真源是招牌屏。
+     同一件事在两个地方各显示一次，玩家不知道看哪个，而改数值时两处会各自漂。
+     ⚠️ 顺序很关键：这条 `display` 必须在下面那条窄视口的覆盖**之前**，
+     反过来写就会被同特异性的后一条吃掉（本文件已有一次 `background` 简写静默重置的教训）。 */
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  /* Stage 3b：与 chip 同一组硬边 token（这块只在窄视口出现，见上面那条 G-单读数）。 */
+  border: var(--hud-edge);
+  outline: var(--hud-edge-lo);
+  border-radius: 2px;
+  background: var(--hud-face);
+}
+
+/* 窄视口反向保留 DOM 读数：小屏上招牌屏被压得很小，像素字看不清，
+   这时候"两处显示"换来的是可读性 —— 所以这是**按视口分工**，不是漏改。 */
+@media (max-width: 899px) {
+  #resource-readout {
+    display: flex;
+  }
+
+  /* V2（P08）：窄视口下状态条从「机柜中部」抬到**币床与按钮行之间**的裙板带 ——
+     原底部 132px 正好压在机关行按钮上（实拍重叠），既挡字又挡按钮。 */
+  #status-line {
+    bottom: 218px;
+  }
+}
+
+#credits-value {
+  font-size: 1.7rem;
+  font-weight: 500;
+  line-height: 1.05;
+  color: var(--brass);
+  font-variant-numeric: tabular-nums;
+}
+
+#action-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+/* V2（P08）：基础态保持纵排（窄视口用）；宽视口覆盖在文件更后（见下）。 */
+#action-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* V2（P08/P-V7）：宽视口下余额读数隐藏（G-单读数），#hud-bottom 只剩动作簇。
+   实拍对比：整簇居中会**盖住出币托盘**（币越线后的落点，玩家要看币落进去）；
+   改为「机关行贴左、投币行贴右」的分列 —— 两侧都是空绿背景，零遮挡，
+   且左右平衡（原先全挤左下角、右侧整块空白的失衡感消除）。
+   ⚠️ 这条必须放在基础 #action-column 规则**之后**：同特异性后写者胜，
+   放前面会被 `flex-direction: column` 静默吃掉（本次实拍踩中过的坑）。 */
+@media (min-width: 900px) {
+  #hud-bottom {
+    justify-content: flex-start;
+  }
+
+  #hud-bottom #action-column {
+    flex: 1 1 auto;
+    flex-direction: row;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 24px;
+  }
+}
+
+/* 机关行：次要操作，尺寸压小，不与投币主按钮抢注意力。 */
+#mechanism-row {
+  display: flex;
+  gap: 6px;
+}
+
+/* 机关行与投币主按钮的差别只有尺寸和排布 ——
+   描边、底色、光标、hover / disabled 全部来自上面那条通用链。 */
+#sweeper-button,
+#grapple-button,
+#reload-button,
+#bet-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 7px 10px;
+  border-radius: 2px;
+  font-size: 0.78rem;
+  touch-action: none;
+}
+
+#sweeper-button small,
+#grapple-button small,
+#reload-button small,
+#bet-button small {
+  color: var(--ink-faint);
+  /* Stage 3b：这一层的"剩余次数"已经换成**计数灯**（抓斗，见 `Hud.setLights` 与 G-计数灯），
+     成本与说明仍是文本 —— 价格画成灯读不出"花 2 筹码"是什么意思。留下来的文本一律吃可读下限：
+     G-字号 钉的就是"#hud 内可见文本 ≥ 11px"，而"太简陋"的一半来源正是这个 9.6px。 */
+  font-size: var(--text-min);
+}
+
+/* Stage 3b · 计数灯（抓斗剩余次数，见 `Hud.setLights`）。亮 = 还有这次可用，暗 = 已用掉。
+   刻意做成**方块而不是圆**，与整机的硬边语言一致；颜色只有黄铜一档 ——
+   绿 / 蓝 / 红是玩法语义色（返币 / 钻石 / 危险），不拿来当装饰。 */
+#grapple-button small {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.light {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--edge-lo);
+  background: rgba(242, 232, 210, 0.12);
+}
+
+.light-on {
+  border-color: var(--edge-hi);
+  background: var(--brass);
+  box-shadow: 0 0 6px var(--brass-glow);
+}
+
+.light-caption {
+  margin-inline-start: 4px;
+}
+
+/* Stage 3b · 铭牌：机关行按钮的名字是 `pixelText` 画的（整数倍放大，不接 DPR）。
+   `image-rendering: pixelated` 保证 CSS 尺寸与画布不一致时也不糊。 */
+.nameplate {
+  display: block;
+  image-rendering: pixelated;
+}
+
+/* 画布里的字机器读不到，所以 DOM 那段文本**不删**，只从视觉上收起来：
+   读屏与判据照样读得到（`G-铭牌` 的第三条断言就是在核这件事）。 */
+.pixel-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* 窄视口（< 900px）回到 DOM 文本：铭牌比两个字宽，四颗按钮并排会把机关行顶出屏幕
+   （实测 390 视口下 `#drop-button` 的右边到 437 ⇒ accept ⑭ 红）。
+   与余额读数同一条取舍：**屏放不下时可读性优先于统一语言**，不是忘了做。 */
+@media (max-width: 899px) {
+  .nameplate {
+    display: none;
+  }
+
+  .pixel-hidden {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+  }
+}
+
+#bet-button {
+  border-color: var(--brass);
+}
+
+#bet-button[hidden] {
+  display: none;
+}
+
+#boost-button,
+#drop-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 12px 20px;
+  border-radius: 2px;
+  font-size: 1rem;
+  touch-action: none;
+}
+
+#boost-button small,
+#drop-button small {
+  color: var(--ink-faint);
+  font-size: var(--text-min);
+}
+
+#drop-button {
+  min-width: 108px;
+  border-color: var(--brass-deep);
+  background: linear-gradient(180deg, rgb(var(--brass-rgb) / 0.26), rgba(169, 118, 44, 0.16));
+}
+
+/* Stage 3b · 按钮硬件化：投币键上加一枚**圆形按钮帽**（纯 CSS 画的，不需要素材）。
+   读感是"一颗按下去会凹的机器键"，而不是又一块玻璃圆角条：
+   高光偏左上、内阴影压在下方、外圈双色边 —— 与机柜的黄铜件同一套受光方向。
+   ⚠️ 没有把它做成整颗按钮的轮廓：那格还有"投币 / 普通铜币"两行文字，
+   整颗圆会把文字挤成弧形，反而更不像机器。`:active` 的 translateY(1px) 由通用规则给。 */
+#drop-button::before {
+  content: '';
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--edge-hi);
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 34% 30%,
+    var(--brass-hi),
+    rgb(var(--brass-rgb)) 52%,
+    var(--brass-deep)
+  );
+  box-shadow:
+    inset 0 -2px 3px rgba(0, 0, 0, 0.5),
+    0 0 8px var(--brass-glow);
+}
+
+#boost-button:not(:disabled) {
+  border-color: var(--mint);
+  box-shadow: 0 0 14px rgba(111, 211, 165, 0.28);
+}
+
+/* 加力未充能时隐藏。必须显式写 display:none——上面的 display:flex 会压过 [hidden] 的默认样式。 */
+#boost-button[hidden] {
+  display: none;
+}
+
+#boost-button:not(:disabled) {
+  animation: boost-breathe 1600ms ease-in-out infinite;
+}
+
+@keyframes boost-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 10px rgba(111, 211, 165, 0.22);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(111, 211, 165, 0.5);
+  }
+}
+
+/* ── 面板 ────────────────────────────────────────────────────────────── */
+
+#pause-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 20;
+  width: min(88vw, 420px);
+  transform: translate(-50%, -50%);
+  padding: 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel-solid);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  text-align: center;
+}
+
+#pause-panel h2 {
+  margin: 0 0 10px;
+  font-size: 1.15rem;
+  font-weight: 500;
+}
+
+#pause-panel p {
+  margin: 0 0 14px;
+  color: var(--ink-dim);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+/* 画质锁按钮：跟在「继续」下面，靠 margin 分开，不抢主操作的视觉重量。 */
+#quality-lock-button {
+  margin-top: 10px;
+}
+
+/* 锁上之后要**看得出来是锁上的**：旧版只有一个状态文字，玩家按完不确定生效没有。 */
+#quality-lock-button[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#pause-panel .pause-note {
+  margin: 12px 0 0;
+  font-size: 0.72rem;
+}
+
+/* 面板从底部滑入，不是瞬间弹出（破产弹窗与暂停面板共用）。 */
+@keyframes result-slide-in {
+  from {
+    transform: translate(-50%, calc(-50% + 28px));
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, -50%);
+    opacity: 1;
+  }
+}
+
+#result-summary {
+  margin: 0 0 14px;
+  color: var(--ink-dim);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+#result-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  margin: 0 0 16px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.82rem;
+}
+
+#result-stats dt {
+  color: var(--ink-faint);
+  text-align: left;
+}
+
+#result-stats dd {
+  margin: 0;
+  color: var(--ink);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+#result-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* ── 小屏 ────────────────────────────────────────────────────────────── */
+
+@media (pointer: coarse), (max-width: 760px) {
+  #hud {
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  }
+
+  #hud-top {
+    gap: 6px;
+  }
+
+  .hud-chip {
+    min-width: 0;
+    padding: 5px 8px;
+  }
+
+  .hud-chip strong,
+  #earned-block strong {
+    font-size: 0.82rem;
+  }
+
+  #earned-block {
+    padding: 5px 8px;
+  }
+
+  #level-chip .hud-label {
+    display: none;
+  }
+
+  #mark-note {
+    display: none;
+  }
+
+  #credits-value {
+    font-size: 1.4rem;
+  }
+
+  #drop-button {
+    min-width: 92px;
+    padding: 14px 18px;
+  }
+
+  #status-line {
+    font-size: 0.72rem;
+  }
+}
+
+/*
+ * 动效降级。信号由 MotionPrefs 写到 <html data-motion>，
+ * CSS 与 JS 读同一个值（以前是 CSS 媒体查询与 JS 标志两套割裂实现）。
+ * 降级只关表现，不关物理：推板推进与台面输送照常跑。
+ */
+[data-motion='reduced'] #earned-value.bump,
+[data-motion='reduced'] #climax-flash.gold,
+[data-motion='reduced'] #climax-flash.green,
+[data-motion='reduced'] #climax-flash.blue,
+[data-motion='reduced'] #climax-flash.white,
+[data-motion='reduced'] #boost-button:not(:disabled) {
+  animation: none;
+}
+
+/* R3-U3：降级表必须跟着通用链走。通用链现在只有一处，
+   所以这里也只有两处 —— 漏同步导致「降级静默失效」的风险面缩到了最小。 */
+[data-motion='reduced'] :where(#app) button {
+  transition: none;
+}
+
+[data-motion='reduced'] :where(#app) button:active:not(:disabled) {
+  transform: none;
+}
+
+[data-motion='reduced'] .mark {
+  transition: none;
+}
+
+[data-motion='reduced'] .fly-score,
+[data-motion='reduced'] .fly-chip {
+  display: none;
+}
+
+/* JS 还没跑起来之前的兜底（MotionPrefs 会立刻把同一信号写到 data-motion）。 */
+@media (prefers-reduced-motion: reduce) {
+  #earned-value.bump,
+  #climax-flash.gold,
+  #climax-flash.green,
+  #climax-flash.blue,
+  #climax-flash.white,
+  #boost-button:not(:disabled) {
+    animation: none;
+  }
+}
+
+/* ── 调试面板（?debug）───────────────────────────────────────────────── */
+
+/*
+ * 下面几个类服务的是**用 JS 注入进 lil-gui DOM 子树**的元素（见 DebugTools 的
+ * `appendNote` / `buildAudioUploadFolder`）。它们必须挂在 `folder.$children` 里——
+ * 挂到 `document.body` 的话 `hideDebugUi`（走 `gui.hide()`）隐藏不到，
+ * 会污染截图测试。类名统一加 `cp-` 前缀，避免和 lil-gui 自带样式撞名。
+ */
+
+.cp-debug-note {
+  margin: 4px 6px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--danger);
+  border-radius: 0 4px 4px 0;
+  background: rgba(208, 103, 74, 0.08);
+  color: var(--ink-dim);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.cp-audio-upload {
+  padding: 6px 8px 8px;
+}
+
+.cp-audio-file {
+  width: 100%;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 0.7rem;
+}
+
+.cp-audio-file::file-selector-button {
+  margin-right: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.cp-audio-file::file-selector-button:hover {
+  border-color: var(--brass);
+}
+
+.cp-audio-status {
+  margin-top: 6px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ink-dim);
+  font-size: 0.66rem;
+  line-height: 1.5;
+  /* 文件路径可能很长，不换行会把面板撑宽。 */
+  overflow-wrap: anywhere;
+}
+
+.cp-audio-status[data-tone='ok'] {
+  background: rgba(111, 211, 165, 0.12);
+  color: var(--mint);
+}
+
+.cp-audio-status[data-tone='error'] {
+  background: rgba(208, 103, 74, 0.14);
+  color: var(--danger);
+}
+
+/* V8 的两条规则放在**文件末尾**是必需的，不是排版偏好：
+   `#drain-prompt` 与 `#resource-readout` 的 `background: var(--panel)` 简写在下面几百行处，
+   简写会把 `background-image` 重置成 none ⇒ 规则写在它们前面就等于没写。
+   （实测：写在第 258 行时只有 `#earned-block` 与 `.hud-chip` 挂上条纹，
+   `#resource-readout` 读到的 computed background-image 是 none。） */
+/*
+ * V8 之二：HUD 的四个读数面板挂上扫描线底纹。
+ *
+ * 选择器列成一张表（而不是给 `background: var(--panel)` 那几处各加一行）的理由：
+ * 那五处里有一处是调试面板的文件按钮（`.cp-audio-file::file-selector-button`），
+ * 它不是机台 UI，跟着发光会很怪 —— 逐处加就会把它一起加进去。
+ * 另外 `background` 是简写、会把 `background-image` 重置成 none，
+ * 所以这里用**后写的长写**覆盖，而不是去改那几条简写。
+ */
+#earned-block,
+.hud-chip,
+#resource-readout,
+#drain-prompt {
+  background-image: var(--crt-scanlines);
+}
+
+/*
+ * V8 之三：数字读数改等宽 + 关掉抗锯齿（"像素字"里**能用系统字体做到**的那部分）。
+ *
+ * ⚠️ 真正的像素字体要带一份字体资产（本项目不联网、也没有位图字体文件），
+ * 所以这条只做两件确定有效的事：
+ *   ① 等宽数字 ⇒ 数值跳动时字宽不抖（`tabular-nums` 已经在 `#best-value` 上用了，
+ *      但对没有该特性的系统字体不保险，等宽栈是硬保证）；
+ *   ② `-webkit-font-smoothing: none` ⇒ 笔画边缘不再被灰阶抗锯齿糊掉，
+ *      这正是用户那句「模糊」的反面。作用域**只有数字**，正文与按钮文案不动 ——
+ *      小字号关抗锯齿在长文上会读成锯齿，那是另一种脏。
+ */
+#earned-value,
+#credits-value,
+#best-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: none;
+}
+
+/* ── UI V4 · Cabinet, stage and controls share one responsive frame ────── */
+:root {
+  --text-min: 12px;
+  font-size: 14px;
+  --ink: #f5f5ff;
+  --ink-dim: #bbc6dd;
+  --ink-faint: #a2aec6;
+  --panel-solid: #11192d;
+}
+#app {
+  --arcade-bg-image: url('/art/ui-v4/arcade-landscape.png');
+  --ui-backdrop: #080d20;
+  --ui-panel: #11192d;
+  --ui-panel-raised: #1b2845;
+  --ui-edge: #45628b;
+  --ui-accent: #ee65b2;
+  --ui-secondary: #54c8ff;
+  --ui-text: #f5f5ff;
+  --ui-muted: #bbc6dd;
+  --ui-danger: #ff927e;
+  --ui-reward: #ffcf63;
+  --ui-sweep: #ef614c;
+  --ui-grapple: #2da9ee;
+  --ui-reload: #ae5eed;
+  --ui-boost: #20bc9b;
+  --ui-coin: #ffc951;
+  --panel-solid: var(--ui-panel);
+  --ink: var(--ui-text);
+  --ink-dim: var(--ui-muted);
+  --ink-faint: var(--ui-muted);
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr) 226px;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 16px;
+  padding: max(16px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+  isolation: isolate;
+  color: var(--ui-text);
+  background:
+    radial-gradient(ellipse at 48% 31%, color-mix(in srgb, var(--ui-accent) 13%, transparent), transparent 64%),
+    radial-gradient(ellipse at 7% 78%, color-mix(in srgb, var(--ui-secondary) 12%, transparent), transparent 50%),
+    var(--ui-backdrop);
+}
+#app::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: var(--arcade-bg-image, none);
+  background-position: center;
+  background-size: cover;
+  opacity: .28;
+  pointer-events: none;
+}
+#app::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(180deg, transparent 20%, color-mix(in srgb, var(--ui-backdrop) 80%, transparent));
+  pointer-events: none;
+}
+#game-stage {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 14px;
+}
+#game-canvas { width: 100%; height: 100%; }
+#stage-overlays { position: absolute; inset: 0; pointer-events: none; }
+#mechanism-preview { position: absolute; inset: 0; z-index: 5; pointer-events: none; --preview-color: var(--ui-grapple); }
+#mechanism-preview[hidden] { display: none; }
+#mechanism-preview[data-mechanism='sweeper'] { --preview-color: var(--ui-sweep); }
+#mechanism-preview-svg { display: block; width: 100%; height: 100%; overflow: hidden; }
+#mechanism-preview polygon { fill: var(--preview-color); fill-opacity: .12; stroke: var(--preview-color); stroke-width: 2; stroke-dasharray: 7 4; stroke-linejoin: round; }
+#mechanism-preview[data-phase='descend'] polygon, #mechanism-preview[data-phase='prepare'] polygon { stroke-dasharray: none; fill-opacity: .18; }
+#mechanism-preview-label { position: absolute; transform: translateX(-50%); display: flex; flex-direction: column; gap: 3px; max-width: min(235px, calc(100% - 12px)); padding: 7px 9px; border: 1px solid var(--preview-color); border-radius: 8px; background: var(--ui-panel); color: var(--ui-text); line-height: 1.4; }
+#mechanism-preview-name { font-size: 14px; font-weight: 650; }
+#mechanism-preview-count { font-size: 12px; color: var(--ui-muted); }
+[data-motion='reduced'] #mechanism-preview, [data-motion='reduced'] #mechanism-preview * { animation: none; transition: none; }
+#hud { display: contents; }
+.ui-panel {
+  border: 1px solid color-mix(in srgb, var(--ui-edge) 80%, transparent);
+  border-radius: 16px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--ui-panel-raised) 75%, var(--ui-panel)), var(--ui-panel));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .09), 0 12px 35px rgb(0 0 0 / .26);
+}
+:where(#app) button {
+  min-height: 44px;
+  border: 1px solid var(--ui-edge);
+  outline: none;
+  border-radius: 10px;
+  color: var(--ui-text);
+  background: linear-gradient(180deg, var(--ui-panel-raised), var(--ui-panel));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .1), 0 3px 8px rgb(0 0 0 / .24);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+  -webkit-tap-highlight-color: transparent;
+}
+:where(#app) button:not(:disabled):hover {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .18), 0 0 15px color-mix(in srgb, var(--ui-secondary) 22%, transparent);
+}
+:where(#app) button:focus-visible { outline: 3px solid var(--ui-secondary); outline-offset: 3px; }
+:where(#app) button:disabled { filter: saturate(.28); color: #a5aec1; box-shadow: inset 0 1px 0 rgb(255 255 255 / .04); }
+[data-ui-icon] { display: inline-flex; flex: 0 0 auto; color: currentColor; font-style: normal; }
+[data-ui-icon] svg, .event-icon svg { display: block; width: 100%; height: 100%; }
+#hud-top {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  gap: 12px;
+  margin: 62px 0 0;
+  padding: 18px 16px;
+  pointer-events: auto;
+}
+#level-chip { display: flex; min-width: 0; padding: 0; gap: 9px; border: none; outline: none; border-radius: 0; background: none; box-shadow: none; }
+#level-chip .hud-label { color: var(--ui-secondary); font-size: 10px; font-weight: 700; letter-spacing: .1em; }
+#level-label { color: var(--ui-text); font-size: 16px; line-height: 1.6; white-space: normal; font-weight: 650; }
+#earned-block { display: flex; flex-direction: column; gap: 12px; padding: 16px 0; border: none; border-top: 1px solid var(--ui-edge); border-bottom: 1px solid var(--ui-edge); outline: none; background: none; }
+.stat-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.hud-label { font-size: 12px; color: var(--ui-muted); letter-spacing: 0; }
+#earned-value { color: var(--ui-reward); font-size: 28px; font-family: inherit; font-weight: 750; -webkit-font-smoothing: antialiased; }
+#best-value { color: var(--ui-text); font-size: 16px; font-family: inherit; -webkit-font-smoothing: antialiased; }
+#resource-readout { display: none; border: none; outline: none; background: none; padding: 0; }
+#hud-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+#hud-actions button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; padding: 11px 8px; min-height: 76px; color: var(--ui-text); }
+#hud-actions [data-ui-icon] { width: 25px; height: 25px; color: var(--ui-reward); }
+.session-note { color: var(--ui-muted); font-size: 12px; line-height: 1.7; }
+.live-dot { display: inline-block; width: 6px; height: 6px; margin-inline-end: 4px; border-radius: 50%; background: var(--ui-secondary); box-shadow: 0 0 8px var(--ui-secondary); }
+#debt-line { position: static; transform: none; max-width: none; font-size: 14px; color: var(--ui-danger); text-align: left; }
+#hud-side { grid-column: 3; grid-row: 1; display: flex; flex-direction: column; align-self: start; gap: 12px; margin-top: 62px; pointer-events: auto; }
+#event-panel, #reward-panel { padding: 16px; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+.panel-heading h2 { margin: 0; color: var(--ui-text); font-size: 14px; font-weight: 700; }
+.panel-heading > span { font-size: 10px; color: var(--ui-muted); }
+.panel-heading [data-ui-icon] { width: 28px; height: 28px; color: var(--ui-reward); }
+#event-list { display: flex; flex-direction: column; gap: 0; margin: 0; padding: 0; list-style: none; }
+.event-empty { padding: 12px 0 16px; color: var(--ui-text); font-size: 14px; line-height: 1.8; }
+.event-empty span { color: var(--ui-muted); font-size: 14px; }
+.event-row { display: flex; gap: 10px; align-items: flex-start; padding: 11px 0; border-top: 1px solid color-mix(in srgb, var(--ui-edge) 40%, transparent); }
+.event-row:first-child { border-top: none; padding-top: 0; }
+.event-icon { display: block; flex: 0 0 25px; width: 25px; height: 25px; color: var(--ui-secondary); }
+.event-row[data-kind='score'] .event-icon { color: var(--ui-coin); }
+.event-row[data-kind='fine'] .event-icon { color: var(--ui-danger); }
+.event-row p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 0 0 5px; color: var(--ui-text); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.event-row strong { color: var(--ui-boost); font-size: 15px; }
+.event-row[data-kind='fine'] strong { color: var(--ui-danger); }
+.event-row time { display: block; color: var(--ui-muted); font-size: 11px; }
+#reward-panel { border-color: color-mix(in srgb, var(--ui-reward) 60%, var(--ui-edge)); }
+#reward-panel h2 { color: var(--ui-reward); }
+.reward-description { margin: 0 0 11px; font-size: 14px; line-height: 1.6; }
+.reward-progress { position: relative; height: 7px; overflow: hidden; border-radius: 99px; background: #080f20; box-shadow: inset 0 1px 3px rgb(0 0 0 / .3); }
+.reward-progress > span { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #ffdc92, var(--ui-reward)); box-shadow: 0 0 10px color-mix(in srgb, var(--ui-reward) 45%, transparent); transition: width 200ms ease-out; }
+.reward-meta { display: flex; justify-content: space-between; gap: 8px; margin: 9px 0 13px; color: var(--ui-muted); font-size: 12px; }
+#reward-open-button { width: 100%; font-size: 14px; min-height: 44px; }
+[data-reward-open][data-ready='true'] { color: #271804; background: linear-gradient(180deg, #ffe2a1, var(--ui-reward)); border-color: #ffe7b0; box-shadow: 0 0 16px color-mix(in srgb, var(--ui-reward) 24%, transparent); }
+#hud-bottom { grid-column: 1 / -1; grid-row: 2; position: relative; display: block; padding: 12px; pointer-events: auto; border-color: var(--ui-edge); border-top: 2px solid color-mix(in srgb, var(--ui-accent) 80%, var(--ui-edge)); }
+#action-column { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, .58fr); align-items: stretch; gap: 18px; }
+#hud-bottom #action-column { flex: none; }
+#mechanism-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+#mechanism-row .mechanism-button {
+  --control-color: var(--ui-secondary);
+  display: grid;
+  grid-template-rows: 38px 24px minmax(16px, auto);
+  align-content: center;
+  align-items: center;
+  justify-items: center;
+  gap: 1px;
+  min-width: 0;
+  min-height: 100px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--control-color) 80%, #f7f3ff);
+  border-radius: 12px;
+  background: linear-gradient(155deg, color-mix(in srgb, var(--control-color) 42%, #253552), color-mix(in srgb, var(--control-color) 20%, #101b31));
+  box-shadow: inset 0 2px 0 rgb(255 255 255 / .18), inset 0 -3px 0 rgb(0 0 0 / .22), 0 0 11px color-mix(in srgb, var(--control-color) 18%, transparent);
+  color: #fff8ed;
+  font-size: 18px;
+  font-weight: 750;
+}
+#mechanism-row #sweeper-button { --control-color: var(--ui-sweep); }
+#mechanism-row #grapple-button { --control-color: var(--ui-grapple); }
+#mechanism-row #reload-button { --control-color: var(--ui-reload); }
+#mechanism-row #boost-button { --control-color: var(--ui-boost); }
+#mechanism-row .mechanism-button [data-ui-icon] { width: 36px; height: 36px; color: var(--control-color); filter: drop-shadow(0 2px 1px rgb(0 0 0 / .25)); }
+#mechanism-row .mechanism-button small { color: #ecedfa; font-size: 12px; font-weight: 500; line-height: 1.3; text-align: center; }
+#mechanism-row .mechanism-button:disabled { border-color: color-mix(in srgb, var(--control-color) 30%, #3a465b); background: linear-gradient(155deg, #243149, #182236); color: #b8c1d4; }
+#mechanism-row .mechanism-button:disabled small { color: #aebbd2; }
+#mechanism-row .mechanism-button:disabled [data-ui-icon] { color: #7186a6; filter: none; }
+#mechanism-row .mechanism-button:not(:disabled):hover { box-shadow: inset 0 2px 0 rgb(255 255 255 / .2), 0 0 20px color-mix(in srgb, var(--control-color) 38%, transparent); }
+.light { width: 5px; height: 5px; border-radius: 2px; }
+.light-on { background: #e0f6ff; border-color: #e0f6ff; box-shadow: 0 0 5px #9ce3ff; }
+.light-caption { margin-inline-start: 3px; }
+#grapple-state { display: flex; flex-wrap: wrap; }
+#action-row { display: grid; grid-template-columns: minmax(96px, .8fr) minmax(150px, 1.4fr); align-items: stretch; gap: 10px; }
+#bet-button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; min-width: 0; padding: 10px 8px; border-color: var(--ui-edge); border-radius: 12px; background: #121e34; font-size: 14px; }
+.bet-label, #bet-button small { color: var(--ui-muted); font-size: 14px; font-weight: 500; }
+#bet-state { color: var(--ui-text); font-size: 18px; font-weight: 700; white-space: nowrap; }
+#drop-button { display: grid; grid-template-columns: 48px auto; grid-template-rows: auto auto; gap: 0 8px; align-content: center; align-items: center; justify-content: center; padding: 10px 14px; min-width: 0; border: 1px solid #ffebb1; border-radius: 14px; color: #271803; background: linear-gradient(155deg, #ffe699 0%, var(--ui-coin) 48%, #dc9b24 100%); box-shadow: inset 0 2px 0 #fff2bc, inset 0 -4px 0 #b87318, 0 5px 18px rgb(0 0 0 / .35), 0 0 18px color-mix(in srgb, var(--ui-coin) 20%, transparent); font-size: 29px; font-weight: 850; }
+#drop-button::before { content: none; }
+#drop-button [data-ui-icon] { grid-column: 1; grid-row: 1 / 3; width: 48px; height: 48px; }
+#drop-button > span { grid-column: 2; grid-row: 1; }
+#drop-button small { grid-column: 2; grid-row: 2; color: #52390a; font-size: 12px; font-weight: 650; }
+#drop-button:not(:disabled):hover { box-shadow: inset 0 2px 0 #fff5d2, inset 0 -4px 0 #b87318, 0 0 24px color-mix(in srgb, var(--ui-coin) 32%, transparent); }
+#drop-button:active:not(:disabled) { transform: translateY(2px); box-shadow: inset 0 3px 9px #c48b2b; }
+#drop-button:disabled { color: #b9c2d4; background: #26334b; border-color: var(--ui-edge); }
+#drop-button:disabled small { color: #b9c2d4; }
+#reward-compact { display: none; }
+#status-slot { position: relative; flex: 0 0 auto; min-width: 0; height: 104px; }
+.status-hint { margin: 0; padding: 10px 12px; color: var(--ui-muted); font-size: 14px; line-height: 1.6; text-align: left; }
+#status-line { position: absolute; inset: 0; z-index: 1; transform: none; width: 100%; max-width: none; max-height: 100%; overflow-y: auto; overflow-x: hidden; padding: 10px 12px; border: 1px solid var(--ui-edge); border-left: 3px solid var(--ui-secondary); border-radius: 10px; background: var(--ui-panel); color: var(--ui-text); font-size: 14px; line-height: 1.6; box-shadow: inset 0 1px 0 rgb(255 255 255 / .05); text-align: left; overflow-wrap: anywhere; pointer-events: auto; scrollbar-width: thin; }
+#status-line:focus-visible { outline: 2px solid var(--ui-secondary); outline-offset: 2px; }
+#hud-top > .session-note { display: none; }
+#hud-bottom > #status-slot { height: 64px; margin-bottom: 8px; }
+#status-line[data-priority='3'] { border-left-color: var(--ui-danger); }
+#xixi-marks { max-width: 100%; border: none; }
+#mark-note { display: block; max-width: 100%; padding: 3px 7px; background: color-mix(in srgb, var(--ui-panel) 82%, transparent); border-radius: 6px; color: var(--ui-muted); font-size: 14px; white-space: nowrap; }
+#combo-toast { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); margin: 0; border-radius: 10px; background: var(--ui-panel); font-size: 16px; white-space: nowrap; }
+#drain-prompt { position: absolute; left: 50%; top: 50%; z-index: 28; width: min(420px, 88%); max-width: none; transform: translate(-50%, -50%); margin: 0; border-color: var(--ui-reward); background: var(--ui-panel); color: var(--ui-text); }
+#drain-prompt p { font-size: 14px; }
+#pause-panel, #collection-panel, #draft-panel, #ruin-panel { border-color: var(--ui-edge); border-radius: 18px; background: var(--ui-panel); color: var(--ui-text); max-height: calc(100dvh - 40px); overflow-y: auto; }
+#draft-panel { width: min(580px, 92vw); padding: 24px; }
+#draft-panel h2 { color: var(--ui-reward); font-size: 22px; font-weight: 750; letter-spacing: 0; }
+#draft-meta { font-size: 14px; line-height: 1.5; }
+#draft-choices button { min-height: 74px; border: 1px solid var(--ui-edge); border-radius: 12px; font-size: 14px; background: var(--ui-panel-raised); }
+#ruin-panel h2, #pause-panel h2, #collection-panel h2 { font-size: 22px; font-weight: 750; }
+#ruin-taunt, #ruin-stats, #ruin-board, #collection-panel h3, .collection-note, .skin-name, .skin-card button, #ticket-count { font-size: 14px; }
+#ruin-stats dt { color: var(--ui-muted); }
+#ruin-panel { border-color: color-mix(in srgb, var(--ui-danger) 70%, var(--ui-edge)); }
+#beg-button, #quit-button { font-size: 14px; }
+#collection-panel { width: min(580px, 94vw); }
+.skin-card { border-color: var(--ui-edge); background: var(--ui-panel-raised); }
+.skin-card.selected { border-color: var(--ui-accent); background: color-mix(in srgb, var(--ui-accent) 12%, var(--ui-panel-raised)); }
+#collection-close { font-size: 14px; }
+#pause-panel p, .pause-note, #quality-lock-button { font-size: 14px; }
+#hud [hidden], #app section[hidden], #debt-line[hidden], #status-line[hidden], #drain-prompt[hidden] { display: none; }
+
+@media (min-width: 768px) and (max-width: 1099px) {
+  #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 54px minmax(0, 1fr) auto; gap: 10px; padding: 12px; }
+  #game-stage { grid-column: 1; grid-row: 2; }
+  #hud-top { grid-column: 1; grid-row: 1; flex-direction: row; align-items: center; margin: 0; padding: 6px 12px; gap: 20px; }
+  #level-chip { flex: 1; }
+  #level-chip .hud-label { display: none; }
+  #level-label { font-size: 14px; line-height: 1.3; }
+  #earned-block { flex-direction: row; gap: 14px; padding: 0; border: none; }
+  #earned-value { font-size: 21px; }
+  .stat-row { gap: 6px; }
+  #hud-actions { display: flex; gap: 7px; }
+  #hud-actions button { flex-direction: row; gap: 6px; min-height: 44px; padding: 6px 12px; }
+  #hud-actions [data-ui-icon] { width: 20px; height: 20px; }
+  #hud-side, .session-note, #debt-line { display: none; }
+  #hud-bottom { grid-column: 1; grid-row: 3; padding: 10px; }
+  #action-column { grid-template-columns: minmax(0, 1fr) minmax(270px, .72fr); gap: 12px; }
+  #mechanism-row .mechanism-button { font-size: 16px; min-height: 92px; }
+  #reward-compact { display: flex; margin-top: 9px; align-items: center; gap: 12px; }
+  #reward-compact > [data-ui-icon] { width: 26px; height: 26px; color: var(--ui-reward); }
+  .compact-reward-copy { flex: 1; display: flex; align-items: center; gap: 16px; font-size: 14px; }
+  .compact-reward-copy .reward-progress { flex: 1; max-width: 300px; }
+  #reward-open-compact { min-height: 44px; padding: 6px 12px; font-size: 14px; }
+}
+
+@media (max-width: 767px) {
+  #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 52px minmax(0, 1fr) auto; gap: 6px; padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
+  #game-stage { grid-column: 1; grid-row: 2; border-radius: 9px; }
+  #hud-top { grid-column: 1; grid-row: 1; flex-direction: row; align-items: center; justify-content: space-between; gap: 7px; margin: 0; padding: 4px 8px; border-radius: 12px; }
+  #level-chip { flex: 1 1 auto; min-width: 0; gap: 0; }
+  #level-chip .hud-label { display: none; }
+  #level-label { display: block; font-size: 14px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #earned-block { display: none; }
+  #resource-readout { display: flex; flex: 0 0 auto; gap: 1px; align-items: center; border: none; background: none; padding: 0 3px; }
+  #resource-readout .hud-label { font-size: 10px; }
+  #credits-value { color: var(--ui-reward); font-family: inherit; font-size: 20px; font-weight: 750; line-height: 1; -webkit-font-smoothing: antialiased; }
+  #hud-actions { display: flex; gap: 5px; }
+  #hud-actions button { min-width: 44px; min-height: 44px; width: 44px; padding: 6px; border-radius: 8px; }
+  #hud-actions button > span { display: none; }
+  #hud-actions [data-ui-icon] { width: 22px; height: 22px; }
+  #hud-side, .session-note, #debt-line { display: none; }
+  #hud-bottom { grid-column: 1; grid-row: 3; padding: 8px; border-radius: 14px; }
+  #action-column { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+  #hud-bottom #action-column { flex-direction: column; gap: 8px; align-items: stretch; }
+  #mechanism-row { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  #mechanism-row .mechanism-button { grid-template-rows: 29px 20px 25px; min-height: 82px; gap: 0; padding: 5px 3px; border-radius: 9px; font-size: 16px; }
+  #mechanism-row .mechanism-button [data-ui-icon] { width: 29px; height: 29px; }
+  #mechanism-row .mechanism-button small { font-size: 12px; line-height: 1.1; }
+  #grapple-state { gap: 2px; }
+  #action-row { grid-template-columns: minmax(98px, .8fr) minmax(0, 1.4fr); gap: 8px; min-height: 64px; }
+  #bet-button { padding: 5px 8px; gap: 2px; border-radius: 10px; }
+  .bet-label { font-size: 14px; }
+  #bet-button small { display: none; }
+  #bet-state { font-size: 17px; }
+  #drop-button { min-height: 64px; grid-template-columns: 40px auto; gap: 0 8px; padding: 5px 8px; font-size: 27px; border-radius: 11px; }
+  #drop-button [data-ui-icon] { width: 40px; height: 40px; }
+  #drop-button small { font-size: 12px; }
+  #reward-compact { display: flex; align-items: center; gap: 7px; margin-top: 8px; border-top: 1px solid color-mix(in srgb, var(--ui-edge) 70%, transparent); padding-top: 7px; min-height: 42px; }
+  #reward-compact > [data-ui-icon] { width: 23px; height: 23px; color: var(--ui-reward); }
+  .compact-reward-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; font-size: 14px; }
+  .compact-reward-copy > span { white-space: normal; overflow-wrap: anywhere; }
+  .compact-reward-copy .reward-progress { height: 5px; }
+  #reward-open-compact { min-height: 44px; max-width: 104px; padding: 5px 7px; font-size: 14px; }
+  #status-line, .status-hint { padding: 7px 10px; font-size: 14px; line-height: 1.5; }
+  #mark-note { display: none; }
+  #draft-panel { padding: 18px 14px; }
+  #collection-panel { padding: 16px 12px; }
+  #collection-panel header { flex-wrap: wrap; gap: 8px; }
+  #ticket-count { font-size: 14px; }
+  .skin-list { gap: 7px; }
+  .skin-card { padding: 9px; gap: 7px; }
+  .skin-card button { font-size: 14px; }
+}
+
+@media (max-width: 359px) {
+  #app { padding-inline: 5px; }
+  #hud-top { padding-inline: 6px; gap: 4px; }
+  #hud-actions button { width: 44px; min-width: 44px; }
+  #hud-bottom { padding: 6px; }
+  #mechanism-row { gap: 4px; }
+  #mechanism-row .mechanism-button { font-size: 14px; }
+  #bet-state { font-size: 15px; }
+  #credits-value { font-size: 18px; }
+  #reward-open-compact { max-width: 88px; }
+}
+@media (max-height: 640px) and (max-width: 767px) {
+  #app { grid-template-rows: 46px minmax(0, 1fr) auto; gap: 4px; }
+  #hud-bottom { padding: 6px; }
+  #mechanism-row .mechanism-button { min-height: 74px; grid-template-rows: 26px 18px 22px; }
+  #action-column, #hud-bottom #action-column { gap: 6px; }
+  #action-row, #drop-button { min-height: 54px; }
+  #reward-compact { margin-top: 5px; padding-top: 5px; }
+}
+[data-motion='reduced'] .reward-progress > span { transition: none; }
+
+@media (min-width: 1100px) and (max-height: 800px) {
+  #event-list .event-row:nth-child(n + 4) { display: none; }
+}
+@media (min-width: 1100px) {
+  #hud-side { min-height: 0; height: calc(100% - 62px); max-height: calc(100% - 62px); }
+  #event-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+  #reward-panel { flex: 0 0 auto; }
+}
+@media (min-width: 1100px) and (max-height: 700px) {
+  #hud-top, #hud-side { margin-top: 24px; }
+  #hud-side { height: calc(100% - 24px); max-height: calc(100% - 24px); }
+  #event-panel, #reward-panel { padding: 13px; }
+  .event-row { padding-block: 8px; }
+  .panel-heading { margin-bottom: 10px; }
+  .reward-meta { margin-block: 7px; }
+}
+
+.event-row[data-kind='jackpot'] { margin: 3px -7px; padding: 10px 7px; border: 1px solid color-mix(in srgb, var(--ui-reward) 45%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--ui-reward) 9%, var(--ui-panel)); }
+.event-row[data-kind='jackpot'] .event-icon, .event-row[data-kind='jackpot'] strong { color: var(--ui-reward); }
+.event-row[data-kind='danger'] .event-icon, .event-row[data-kind='danger'] strong { color: var(--ui-danger); }
+#status-line[data-kind='jackpot'] { border-color: var(--ui-reward); border-left-color: var(--ui-reward); box-shadow: 0 0 20px color-mix(in srgb, var(--ui-reward) 22%, transparent); }
+#status-line[data-kind='danger'] { border-left-color: var(--ui-danger); }
+
+#earned-block #earned-value { font-size: 28px; font-weight: 750; }
+#earned-block #best-value { font-size: 16px; font-weight: 650; }
+#pause-panel .pause-note { font-size: 14px; }
+#hud-bottom #action-column { align-items: stretch; gap: 18px; }
+@media (min-width: 768px) and (max-width: 1099px) {
+  #earned-block #earned-value { font-size: 21px; }
+  #hud-bottom #action-column { gap: 12px; }
+}
+@media (max-width: 767px) {
+  #hud-bottom #action-column { gap: 8px; }
+  #mechanism-row #grapple-state { gap: 2px; }
+}
+@media (max-height: 640px) and (max-width: 767px) {
+  #hud-bottom #action-column { gap: 6px; }
+}
+
+.draft-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+#draft-panel .draft-heading h2 { margin: 0; text-align: left; }
+#draft-close-button { min-height: 44px; flex: 0 0 auto; padding: 8px 12px; font-size: 14px; font-weight: 600; color: var(--ui-muted); border-color: var(--ui-edge); box-shadow: none; }
+@media (max-width: 359px) { .draft-heading { gap: 8px; } #draft-panel .draft-heading h2 { font-size: 19px; } #draft-close-button { padding-inline: 9px; } }
+
+/* V4 visual polish: let the room frame the machine without a second visible box. */
+#game-stage { border-radius: 0; }
+#game-stage::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--ui-backdrop) 82%, transparent), transparent 5%, transparent 95%, color-mix(in srgb, var(--ui-backdrop) 82%, transparent)),
+    linear-gradient(180deg, color-mix(in srgb, var(--ui-backdrop) 78%, transparent), transparent 4%, transparent 96%, color-mix(in srgb, var(--ui-backdrop) 78%, transparent));
+}
+#mechanism-row .mechanism-button { grid-template-rows: 42px 24px minmax(16px, auto); }
+#mechanism-row .mechanism-button [data-ui-icon] { width: 40px; height: 40px; }
+#mechanism-row #grapple-state { display: block; white-space: nowrap; }
+#draft-choices button[data-effect] { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; column-gap: 12px; min-height: 86px; line-height: 1.65; }
+#draft-choices button[data-effect]::before { content: ''; display: block; width: 42px; height: 42px; background-size: contain; background-position: center; background-repeat: no-repeat; }
+#draft-choices button[data-effect='boostPack']::before { background-image: var(--ui-draft-boostPack); }
+#draft-choices button[data-effect='mechanicCharge']::before { background-image: var(--ui-draft-mechanicCharge); }
+#draft-choices button[data-effect='ticketLens']::before { background-image: var(--ui-draft-ticketLens); }
+#draft-choices .draft-badge { display: none; }
+#draft-choices button[data-effect] > span { display: block; grid-column: 2; }
+#draft-choices button[data-effect]:disabled::before { filter: grayscale(.75); }
+@media (max-width: 767px) {
+  #app { --arcade-bg-image: url('/art/ui-v4/arcade-portrait.png'); }
+  #game-stage { border-radius: 0; }
+  #game-stage::after { background: linear-gradient(90deg, color-mix(in srgb, var(--ui-backdrop) 60%, transparent), transparent 2%, transparent 98%, color-mix(in srgb, var(--ui-backdrop) 60%, transparent)); }
+  #mechanism-row .mechanism-button { grid-template-rows: 32px 20px 25px; }
+  #mechanism-row .mechanism-button [data-ui-icon] { width: 32px; height: 32px; }
+  #draft-choices button[data-effect] { grid-template-columns: 34px minmax(0, 1fr); column-gap: 9px; min-height: 86px; }
+  #draft-choices button[data-effect]::before { width: 34px; height: 34px; }
+}
+@media (max-height: 640px) and (max-width: 767px) {
+  #mechanism-row .mechanism-button { grid-template-rows: 26px 18px 22px; }
+  #mechanism-row .mechanism-button [data-ui-icon] { width: 26px; height: 26px; }
+}
+
+/* Compact screens retain the event history through an explicit drawer. */
+#hud-actions #event-toggle-button, #event-close-button { display: none; }
+#event-backdrop { position: fixed; inset: 0; z-index: 40; background: rgb(3 7 18 / .66); pointer-events: auto; }
+#event-backdrop[hidden] { display: none; }
+.cabinet-preview { grid-column: 1 / -1; display: block; width: 100%; height: 126px; margin-bottom: 3px; border-radius: 9px; background: radial-gradient(ellipse at center, color-mix(in srgb, var(--ui-secondary) 10%, transparent), transparent 70%); }
+@media (max-width: 1099px) {
+  #hud-actions #event-toggle-button { display: flex; }
+  #app[data-events-open='true'] #hud-side { position: fixed; top: max(76px, env(safe-area-inset-top)); right: max(14px, env(safe-area-inset-right)); left: auto; bottom: auto; z-index: 41; display: block; width: min(360px, calc(100vw - 28px)); margin: 0; max-height: calc(100dvh - 98px); pointer-events: auto; }
+  #app[data-events-open='true'] #event-panel { max-height: calc(100dvh - 98px); overflow-y: auto; border-color: var(--ui-secondary); box-shadow: 0 18px 55px rgb(0 0 0 / .55); }
+  #app[data-events-open='true'] #event-close-button { display: block; min-width: 60px; min-height: 44px; padding: 8px 10px; color: var(--ui-text); font-size: 14px; }
+  #app[data-events-open='true'] #event-panel .panel-heading > span, #app[data-events-open='true'] #reward-panel { display: none; }
+  #app[data-events-open='true'] .event-row p { -webkit-line-clamp: unset; overflow: visible; }
+  #app[data-events-open='true'] #event-list .event-row:nth-child(n + 4) { display: flex; }
+}
+@media (max-width: 767px) {
+  #app[data-events-open='true'] #hud-side { top: max(68px, env(safe-area-inset-top)); }
+  .cabinet-preview { height: 110px; }
+}
+/* Keep a useful playfield on short phones. The page may scroll vertically; width never grows. */
+@media (max-width: 767px) and (max-height: 640px) {
+  html, body { height: auto; min-height: 100dvh; overflow-y: auto; overflow-x: hidden; }
+  #app { height: auto; min-height: 640px; overflow-x: hidden; grid-template-rows: 46px minmax(280px, 1fr) auto; }
+}

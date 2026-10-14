@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d0b08" />
+    <link rel="icon" href="data:," />
+    <title>币塔街机 · 网页推币机</title>
+  </head>
+  <body>
+    <main id="app">
+      <section id="game-stage" aria-label="推币机台">
+        <canvas id="game-canvas" aria-label="推币机游戏画面"></canvas>
+        <div id="climax-flash" aria-hidden="true"></div>
+        <div id="stage-overlays">
+          <div id="mechanism-preview" role="group" aria-label="机关作用范围" hidden>
+            <svg id="mechanism-preview-svg" aria-hidden="true" preserveAspectRatio="none"><polygon vector-effect="non-scaling-stroke"></polygon></svg>
+            <div id="mechanism-preview-label"><strong id="mechanism-preview-name"></strong><span id="mechanism-preview-count"></span></div>
+          </div>
+          <div id="xixi-marks" aria-label="XIXI 集章状态">
+            <span id="mark-note">投币点亮 XIXI 四槽，集齐摇老虎机</span>
+          </div>
+          <div id="combo-toast" role="status" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <section id="hud" aria-label="游戏操作与局况">
+        <header id="hud-top" class="ui-panel">
+          <div class="hud-chip" id="level-chip">
+            <span class="hud-label">NEON ARCADE · 币塔街机</span>
+            <strong id="level-label">无尽 · xixi 大王大赏</strong>
+          </div>
+          <div id="earned-block">
+            <div class="stat-row"><span class="hud-label">本局赚进</span><strong id="earned-value">0</strong></div>
+            <div class="stat-row"><span class="hud-label">历史最高</span><strong id="best-value">0</strong></div>
+          </div>
+          <div id="resource-readout">
+            <span class="hud-label">余额</span><strong id="credits-value">0</strong>
+          </div>
+          <div id="hud-actions">
+            <button id="pause-button" class="utility-button" type="button" aria-label="暂停">
+              <i data-ui-icon="pause" aria-hidden="true"></i><span>暂停</span>
+            </button>
+            <button id="collection-button" class="utility-button" type="button" aria-label="图鉴">
+              <i data-ui-icon="collection" aria-hidden="true"></i><span>图鉴</span>
+            </button>
+            <button id="event-toggle-button" class="utility-button" type="button" aria-label="最近事件" aria-controls="event-panel" aria-expanded="false">
+              <i data-ui-icon="event" aria-hidden="true"></i><span>事件</span>
+            </button>
+          </div>
+          <div id="debt-line" hidden aria-live="polite"><span id="debt-note"></span></div>
+          <div class="session-note"><span class="live-dot" aria-hidden="true"></span> 投币选位，推落赢取筹码</div>
+        </header>
+
+        <aside id="hud-side" aria-label="奖励与近期事件">
+          <section id="event-panel" class="ui-panel" role="region" aria-label="最近事件">
+            <div class="panel-heading"><h2>最近事件</h2><span>实时机台</span><button id="event-close-button" type="button" aria-label="关闭事件">收起</button></div>
+            <ol id="event-list"><li class="event-empty">投币，点亮 XIXI<br><span>奖励与机关事件会记在这里</span></li></ol>
+          </section>
+          <section id="reward-panel" class="ui-panel reward-card">
+            <div class="panel-heading"><h2>下一档奖励</h2><i data-ui-icon="ticket" aria-hidden="true"></i></div>
+            <p class="reward-description" data-reward-description>再得 1 票，解锁三选一</p>
+            <div id="reward-progress" class="reward-progress" role="progressbar" aria-label="本波奖励进度" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0"><span data-reward-fill></span></div>
+            <div class="reward-meta"><span data-reward-wave>第 1 波</span><span data-reward-tickets>持有 0 票</span></div>
+            <button id="reward-open-button" data-reward-open type="button" disabled>奖励尚未就绪</button>
+          </section>
+        </aside>
+
+        <footer id="hud-bottom" class="ui-panel">
+          <div id="status-slot">
+            <p class="status-hint">轻点机台投币，集齐 XIXI 开奖</p>
+            <div id="status-line" role="status" aria-live="polite" tabindex="0" hidden></div>
+          </div>
+          <div id="action-column">
+            <div id="mechanism-row" aria-label="机关操作">
+              <button id="sweeper-button" class="mechanism-button" type="button">
+                <i data-ui-icon="sweep" aria-hidden="true"></i><span>扫板</span><small id="sweeper-state">收尾停板可用</small>
+              </button>
+              <button id="grapple-button" class="mechanism-button" type="button">
+                <i data-ui-icon="grapple" aria-hidden="true"></i><span>抓斗</span><small id="grapple-state">2筹码 · 剩2次</small>
+              </button>
+              <button id="reload-button" class="mechanism-button" type="button">
+                <i data-ui-icon="reload" aria-hidden="true"></i><span>后装填</span><small id="reload-state">花 1 筹码 · 注入 3 枚</small>
+              </button>
+              <button id="boost-button" class="mechanism-button" type="button" disabled>
+                <i data-ui-icon="boost" aria-hidden="true"></i><span>加力</span><small id="boost-state">集章充能</small>
+              </button>
+            </div>
+            <div id="action-row">
+              <button id="bet-button" type="button" aria-label="切换加注档位">
+                <span class="bet-label">加注档位</span><strong id="bet-state">1 投 · ×1</strong><small>轻点切换</small>
+              </button>
+              <button id="drop-button" type="button">
+                <i data-ui-icon="coin" aria-hidden="true"></i><span>投币</span><small id="drop-state">普通铜币</small>
+              </button>
+            </div>
+          </div>
+          <section id="reward-compact" class="reward-card" aria-label="下一档奖励">
+            <i data-ui-icon="ticket" aria-hidden="true"></i>
+            <div class="compact-reward-copy"><span data-reward-description>再得 1 票，解锁三选一</span><div class="reward-progress" role="progressbar" aria-label="本波奖励进度" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0"><span data-reward-fill></span></div></div>
+            <button id="reward-open-compact" data-reward-open type="button" disabled>下一档奖励</button>
+          </section>
+        </footer>
+        <div id="drain-prompt" hidden>
+          <p>收尾阶段：仍持有加力。使用它，或放弃并结算。</p>
+          <button id="giveup-button" type="button">放弃加力并结算</button>
+        </div>
+      </section>
+
+      <div id="event-backdrop" aria-hidden="true" hidden></div>
+
+      <section id="pause-panel" hidden>
+        <h2>已暂停</h2>
+        <p>推板与物理都已冻结，恢复后不会补算暂停时间。</p>
+        <button id="resume-button" type="button">继续</button>
+        <button id="quality-lock-button" type="button" aria-pressed="false">画质：自动（当前 高）</button>
+        <p class="pause-note">帧率偏低时画面会自动降档；锁上之后就不再自动换。</p>
+      </section>
+
+      <section id="collection-panel" hidden>
+        <header>
+          <h2>图鉴</h2>
+          <span id="ticket-count">筹码 0</span>
+          <button id="collection-close" type="button">关闭</button>
+        </header>
+        <p class="collection-note">
+          外观只改币纹与机柜配色，不影响返值、投币消耗与推板行程。
+        </p>
+        <h3>币纹</h3>
+        <div id="coin-skin-list" class="skin-list"></div>
+        <h3>机柜配色</h3>
+        <div id="cabinet-skin-list" class="skin-list"></div>
+      </section>
+
+            <!-- 破产弹窗：无尽模式的核心产出，不是失败惩罚。 -->
+      <section id="ruin-panel" hidden>
+        <h2 id="ruin-title">破产</h2>
+        <p id="ruin-taunt"></p>
+        <dl id="ruin-stats"></dl>
+        <p id="ruin-board"></p>
+        <div id="ruin-actions">
+          <button id="loan-button" type="button">贷款续玩</button>
+          <button id="beg-button" type="button">跪求 xixi 大王大赏</button>
+          <button id="quit-button" type="button">保留尊严，收工</button>
+        </div>
+      </section>
+      <!-- 波间三选一（1c）：攒够本波票券之后立起来的一张选卡面板。
+           **不是破产窗**：语义上它是奖励，样式上刻意不复用 #ruin-panel 的规则，
+           但用同一套面板语言（硬边、铭牌、按钮），所以它看起来是同一台机器上的东西。 -->
+      <section id="draft-panel" hidden>
+        <header class="draft-heading"><h2 id="draft-title">波间三选一</h2><button id="draft-close-button" type="button">稍后领取</button></header>
+        <p id="draft-meta"></p>
+        <div id="draft-choices"></div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

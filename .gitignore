@@ -1,0 +1,8 @@
+node_modules/
+dist/
+test-results/
+artifacts/
+review-output/
+shots/
+*.log
+.DS_Store
