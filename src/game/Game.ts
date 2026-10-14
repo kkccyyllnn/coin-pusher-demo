@@ -17,7 +17,7 @@ import {
   readFinalView,
 } from '../render/FinalPass';
 import { attachGInfoFallback } from '../render/glsl/gbuffer.glsl';
-import { applyCameraRig, fitCameraRig } from '../render/cameraRig';
+import { applyCameraRig, cameraRig, fitCameraRig, placeCameraRig } from '../render/cameraRig';
 import { marqueeScreen } from '../render/marqueeScreen';
 import { rampLutCount } from '../render/RampLut';
 import {
@@ -796,6 +796,15 @@ export class Game {
     // 低端设备仍能自救 —— 走的是玩家那个锁档按钮同一条 `setQualityLock` 路径，
     // 不新增第二套换档逻辑（主工程仍保持默认自动，见 Game.ts 里"为什么是加锁"那段）。
     if (!new URLSearchParams(window.location.search).has('autoquality')) this.setQualityLock(true);
+
+    // demo 补丁 2：机位固定「到观察点距离 3.6 米」。自动取景在 1280x720 下算出的是 3.979 米，
+    // 所以这是往里推约 10%。必须同时关掉 cameraAutoFit —— fitCamera() 只在它为真时重算距离，
+    // 否则改窗口尺寸或换画质档会把 3.6 弹回去（就是面板上「改了没用」那个老坑）。
+    // 走面板 distance 滑杆同一条路径：distance → placeCameraRig() → applyCameraRigFromPanel()。
+    this.tuning.cameraAutoFit = false;
+    cameraRig.distance = 3.6;
+    placeCameraRig();
+    this.applyCameraRigFromPanel();
     this.hud.bindRuinActions(
       () => this.begForChips(),
       () => this.endRun(),
